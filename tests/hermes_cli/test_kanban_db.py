@@ -179,6 +179,69 @@ def test_create_task_unknown_parent_errors(kanban_home):
         kb.create_task(conn, title="orphan", parents=["t_ghost"])
 
 
+def test_create_managed_pipeline_adds_boardmanager_finalizer(kanban_home):
+    with kb.connect() as conn:
+        created = kb.create_managed_pipeline(
+            conn,
+            title="ship feature",
+            body="Build the thing",
+            implementer="builder",
+            created_by="aster",
+            tenant="ops",
+        )
+
+        assert list(created) == [
+            "intake",
+            "research",
+            "planning",
+            "implementation",
+            "review",
+            "boardmanager_finalizer",
+        ]
+        tasks = {step: kb.get_task(conn, tid) for step, tid in created.items()}
+
+        assert tasks["intake"].assignee == "boardmanager"
+        assert tasks["research"].assignee == "researcher"
+        assert tasks["planning"].assignee == "planner"
+        assert tasks["implementation"].assignee == "builder"
+        assert tasks["review"].assignee == "reviewer"
+        assert tasks["boardmanager_finalizer"].assignee == "boardmanager"
+        assert tasks["boardmanager_finalizer"].status == "todo"
+        assert "archive" in (tasks["boardmanager_finalizer"].body or "")
+        assert "file hygiene" in (tasks["boardmanager_finalizer"].body or "")
+
+        links = {
+            (r["parent_id"], r["child_id"])
+            for r in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+        }
+        assert (created["intake"], created["research"]) in links
+        assert (created["research"], created["planning"]) in links
+        assert (created["planning"], created["implementation"]) in links
+        assert (created["implementation"], created["review"]) in links
+        assert (created["review"], created["boardmanager_finalizer"]) in links
+
+
+def test_create_managed_pipeline_security_gate_fans_into_finalizer(kanban_home):
+    with kb.connect() as conn:
+        created = kb.create_managed_pipeline(
+            conn,
+            title="touch auth",
+            implementer="builder",
+            include_security=True,
+            include_research=False,
+        )
+
+        assert "research" not in created
+        assert kb.get_task(conn, created["security"]).assignee == "security"
+        links = {
+            (r["parent_id"], r["child_id"])
+            for r in conn.execute("SELECT parent_id, child_id FROM task_links").fetchall()
+        }
+        assert (created["implementation"], created["security"]) in links
+        assert (created["review"], created["boardmanager_finalizer"]) in links
+        assert (created["security"], created["boardmanager_finalizer"]) in links
+
+
 def test_workspace_kind_validation(kanban_home):
     with kb.connect() as conn, pytest.raises(ValueError, match="workspace_kind"):
         kb.create_task(conn, title="bad ws", workspace_kind="cloud")

@@ -349,6 +349,32 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
+    # --- managed pipeline ---
+    p_pipeline = sub.add_parser(
+        "pipeline",
+        help="Create the enforced research→planning→implementation→review→boardmanager lifecycle graph",
+    )
+    p_pipeline.add_argument("title", help="Pipeline title / original task")
+    p_pipeline.add_argument("--body", default=None, help="Original request / scope")
+    p_pipeline.add_argument(
+        "--implementer",
+        required=True,
+        help="Profile that owns implementation (e.g. stromwellcoder, musiccoder)",
+    )
+    p_pipeline.add_argument("--tenant", default=None, help="Tenant namespace")
+    p_pipeline.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_pipeline.add_argument("--workspace", default="scratch",
+                            help="scratch | worktree | dir:<path> for the intake task")
+    p_pipeline.add_argument("--created-by", default="user",
+                            help="Author name recorded on created tasks (default: user)")
+    p_pipeline.add_argument("--idempotency-key", default=None,
+                            help="Dedup key prefix; each pipeline step gets '<key>:<step>'")
+    p_pipeline.add_argument("--no-research", action="store_true",
+                            help="Skip the research stage when facts/context are already settled")
+    p_pipeline.add_argument("--security", action="store_true",
+                            help="Add a security gate in parallel with reviewer after implementation")
+    p_pipeline.add_argument("--json", action="store_true", help="Emit JSON output")
+
     # --- swarm ---
     p_swarm = sub.add_parser(
         "swarm",
@@ -914,6 +940,7 @@ def kanban_command(args: argparse.Namespace) -> int:
     handlers = {
         "init":     _cmd_init,
         "create":   _cmd_create,
+        "pipeline": _cmd_pipeline,
         "swarm":    _cmd_swarm,
         "list":     _cmd_list,
         "ls":       _cmd_list,
@@ -1357,6 +1384,37 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_pipeline(args: argparse.Namespace) -> int:
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        created = kb.create_managed_pipeline(
+            conn,
+            title=args.title,
+            body=args.body,
+            implementer=args.implementer,
+            created_by=args.created_by or _profile_author(),
+            tenant=args.tenant,
+            priority=args.priority,
+            workspace_kind=ws_kind,
+            workspace_path=ws_path,
+            include_research=not bool(getattr(args, "no_research", False)),
+            include_security=bool(getattr(args, "security", False)),
+            idempotency_key=getattr(args, "idempotency_key", None),
+        )
+        tasks = {step: kb.get_task(conn, tid) for step, tid in created.items()}
+    if getattr(args, "json", False):
+        print(json.dumps({step: _task_to_dict(task) for step, task in tasks.items()}, indent=2, ensure_ascii=False))
+    else:
+        print("Created managed pipeline:")
+        for step, task in tasks.items():
+            print(f"  {step:24s} {task.id}  ({task.status}, assignee={task.assignee or '-'})")
     return 0
 
 

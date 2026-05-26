@@ -186,6 +186,9 @@ Every tool has a CLI equivalent for human operators and scripts:
 - `kanban_complete` ↔ `hermes kanban complete <id> --summary "..." --metadata '{...}'`
 - `kanban_block` ↔ `hermes kanban block <id> "reason"`
 - `kanban_create` ↔ `hermes kanban create "title" --assignee <profile> [--parent <id>]`
+- Managed multi-stage work ↔ `hermes kanban pipeline "title" --implementer <profile> [--security] [--no-research]`
 - etc.
 
 Use the tools from inside an agent; the CLI exists for the human at the terminal.
+For substantial dev work, prefer the managed pipeline command/path so the
+boardmanager finalizer cannot be skipped.

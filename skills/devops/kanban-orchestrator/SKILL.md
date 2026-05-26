@@ -42,6 +42,14 @@ Create Kanban tasks when any of these are true:
 
 If *none* of those apply — it's a small one-shot reasoning task — use `delegate_task` instead or answer the user directly.
 
+For substantial dev/ops work, prefer the managed pipeline command:
+`hermes kanban pipeline "<task>" --implementer <profile> [--security] [--no-research]`.
+It creates intake -> research -> planning -> implementation -> review/testing ->
+boardmanager finalizer in code, with an optional security gate. Use manual
+`kanban_create` fan-out for bespoke graphs, but do not recreate standalone
+completion-ping cron jobs when the final boardmanager card can own completion
+notification, lifecycle, archive, and file-hygiene checks.
+
 ## The anti-temptation rules
 
 Your job description says "route, don't execute." The rules that enforce that:
