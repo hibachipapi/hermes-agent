@@ -1762,6 +1762,163 @@ def create_task(
     raise RuntimeError("unreachable")
 
 
+def create_managed_pipeline(
+    conn: sqlite3.Connection,
+    *,
+    title: str,
+    body: Optional[str] = None,
+    implementer: str,
+    created_by: Optional[str] = None,
+    tenant: Optional[str] = None,
+    priority: int = 0,
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    include_research: bool = True,
+    include_security: bool = False,
+    idempotency_key: Optional[str] = None,
+) -> dict[str, str]:
+    """Create the standard managed task graph for substantial board work.
+
+    The enforced graph is intake/root -> optional research -> planning ->
+    implementation -> review/testing -> optional security -> boardmanager
+    final notification/lifecycle/file-hygiene closeout. Callers that use
+    the managed pipeline cannot forget the final boardmanager gate.
+    """
+    implementer = _canonical_assignee(implementer)
+    if not implementer:
+        raise ValueError("implementer is required")
+    if not title or not title.strip():
+        raise ValueError("title is required")
+
+    clean_title = title.strip()
+    key_prefix = idempotency_key.strip() if idempotency_key else None
+
+    def key(step: str) -> Optional[str]:
+        return f"{key_prefix}:{step}" if key_prefix else None
+
+    root = create_task(
+        conn,
+        title=f"intake: {clean_title}",
+        body=body,
+        assignee="boardmanager",
+        created_by=created_by,
+        tenant=tenant,
+        priority=priority,
+        workspace_kind=workspace_kind,
+        workspace_path=workspace_path,
+        idempotency_key=key("intake"),
+    )
+
+    upstream = root
+    created: dict[str, str] = {"intake": root}
+
+    if include_research:
+        research = create_task(
+            conn,
+            title=f"research: {clean_title}",
+            body=(
+                "Research/source-discovery stage for managed pipeline. "
+                "Produce findings, sources, repo/API context, risks, and open questions.\n\n"
+                f"Original request:\n{body or clean_title}"
+            ),
+            assignee="researcher",
+            created_by=created_by,
+            tenant=tenant,
+            priority=priority,
+            parents=[upstream],
+            idempotency_key=key("research"),
+        )
+        created["research"] = research
+        upstream = research
+
+    planning = create_task(
+        conn,
+        title=f"planning: {clean_title}",
+        body=(
+            "Planning/spec stage for managed pipeline. Write/update the plan, "
+            "acceptance gates, dependency graph, proof requirements, and artifact destinations. "
+            "Do not implement."
+        ),
+        assignee="planner",
+        created_by=created_by,
+        tenant=tenant,
+        priority=priority,
+        parents=[upstream],
+        idempotency_key=key("planning"),
+    )
+    created["planning"] = planning
+
+    implementation = create_task(
+        conn,
+        title=f"implementation: {clean_title}",
+        body=(
+            "Implementation stage for managed pipeline. Follow the parent plan/spec exactly. "
+            "Attach proof paths, tests, changed files, and any deviations in comments or completion metadata."
+        ),
+        assignee=implementer,
+        created_by=created_by,
+        tenant=tenant,
+        priority=priority,
+        parents=[planning],
+        idempotency_key=key("implementation"),
+    )
+    created["implementation"] = implementation
+
+    review = create_task(
+        conn,
+        title=f"review/testing: {clean_title}",
+        body=(
+            "Independent review/testing gate. Verify implementation against original intent and plan. "
+            "Classify outcome as FULL_INTENT_COMPLETE, PARTIAL_ARTIFACT, SMOKE_ONLY, SPEC_ONLY, "
+            "SELF_REPORT_ONLY/BOGUS, or SUPERSEDED/INTENTIONALLY_NOT_ENACTED. Do not self-review."
+        ),
+        assignee="reviewer",
+        created_by=created_by,
+        tenant=tenant,
+        priority=priority,
+        parents=[implementation],
+        idempotency_key=key("review"),
+    )
+    created["review"] = review
+
+    final_parents = [review]
+    if include_security:
+        security = create_task(
+            conn,
+            title=f"security review: {clean_title}",
+            body=(
+                "Sensitive-surface security gate. Read-only unless explicitly approved. "
+                "Check auth, secrets, permissions, production runtime, live-money/trading, and dependency trust risks."
+            ),
+            assignee="security",
+            created_by=created_by,
+            tenant=tenant,
+            priority=priority,
+            parents=[implementation],
+            idempotency_key=key("security"),
+        )
+        created["security"] = security
+        final_parents.append(security)
+
+    finalizer = create_task(
+        conn,
+        title=f"notify/archive/hygiene: {clean_title}",
+        body=(
+            "Boardmanager finalizer. Summarize outcome and proof for Aster/Oscar; verify reviewer/security gates; "
+            "update lifecycle state; archive or park only with proof/explicit intent; verify durable docs/artifacts and file hygiene. "
+            "Ping only on completion or real human intervention needed."
+        ),
+        assignee="boardmanager",
+        created_by=created_by,
+        tenant=tenant,
+        priority=priority,
+        parents=final_parents,
+        idempotency_key=key("boardmanager-finalizer"),
+    )
+    created["boardmanager_finalizer"] = finalizer
+    return created
+
+
 def _find_missing_parents(conn: sqlite3.Connection, parents: Iterable[str]) -> list[str]:
     parents = list(parents)
     if not parents:
