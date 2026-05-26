@@ -38,6 +38,7 @@ class TestSecureDir:
     def test_sets_0700_on_existing_dir(self, tmp_path, monkeypatch):
         monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
         monkeypatch.delenv("HERMES_MANAGED", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         target = tmp_path / "logs"
         target.mkdir()
         os.chmod(target, 0o755)
@@ -49,6 +50,7 @@ class TestSecureDir:
     def test_honors_hermes_home_mode(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME_MODE", "0750")
         monkeypatch.delenv("HERMES_MANAGED", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         target = tmp_path / "logs"
         target.mkdir()
         os.chmod(target, 0o755)
@@ -102,6 +104,9 @@ class TestLogFilePermissions:
         import hermes_logging
 
         monkeypatch.setattr(config, "is_managed", lambda: False)
+        monkeypatch.delenv("HERMES_HOME_MODE", raising=False)
+        monkeypatch.delenv("HERMES_MANAGED", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
         root = logging.getLogger()
         before_handlers = set(root.handlers)
         before_initialized = hermes_logging._logging_initialized
@@ -117,6 +122,34 @@ class TestLogFilePermissions:
                 path = log_dir / name
                 assert path.exists()
                 assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        finally:
+            for handler in list(root.handlers):
+                if handler not in before_handlers:
+                    root.removeHandler(handler)
+                    handler.close()
+            hermes_logging._logging_initialized = before_initialized
+
+    def test_setup_logging_keeps_managed_group_access(self, tmp_path, monkeypatch):
+        import hermes_cli.config as config
+        import hermes_logging
+
+        monkeypatch.setattr(config, "is_managed", lambda: True)
+        monkeypatch.setenv("HERMES_MANAGED", "true")
+        root = logging.getLogger()
+        before_handlers = set(root.handlers)
+        before_initialized = hermes_logging._logging_initialized
+
+        log_dir = hermes_logging.setup_logging(
+            hermes_home=tmp_path,
+            mode="gateway",
+            force=True,
+        )
+        try:
+            assert stat.S_IMODE(os.stat(log_dir).st_mode) == 0o2770
+            for name in ("agent.log", "errors.log", "gateway.log"):
+                path = log_dir / name
+                assert path.exists()
+                assert stat.S_IMODE(os.stat(path).st_mode) == 0o660
         finally:
             for handler in list(root.handlers):
                 if handler not in before_handlers:
